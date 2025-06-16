@@ -11,13 +11,34 @@ This project is a simple practise after learning Andrew NG's Machine Learning (M
 The AIGC detector is based on the simplest classification algorithm —— logistic regression. It uses `sigmod` as the activation function.
 #### Detection Metrics Introduction
 - **avg_sentence_len**: Represents the average length of sentences in the text. It gives an idea of the typical number of elements (like words, tokens) that make up a sentence on average. For example, if most sentences in a text are short, this value will be relatively low, and vice versa.
+
+
 - **connective_ratio**: The proportion of connective words (such as "and", "but", "however") in the text relative to the total number of words or tokens. Connective words help in understanding the logical flow and relationships between different parts of the text.
+
+
 - **connective_starter_ratio**: Denotes the proportion of sentences that start with a connective word. It can reflect the writing style regarding how often the author begins a new thought or statement with a connecting term.
+
+
 - **max_sentence_len**: Shows the length of the longest sentence in the text. This metric helps identify extreme cases of very long, potentially complex or rambling sentences.
+
+
+
 - **min_sentence_len**: Indicates the length of the shortest sentence. It can highlight the presence of very concise expressions in the text.
+
+
+
 - **passive_voice_ratio**: The proportion of sentences that use the passive voice. Passive voice construction (e.g., "The ball was thrown by the boy") has a different stylistic feel compared to active voice and can vary between AI-generated and human-written texts.
+
+
+
 - **sentence_len_std**: The standard deviation of sentence lengths. It measures the variability or dispersion of sentence lengths in the text. A low standard deviation means sentence lengths are relatively consistent, while a high value indicates more variation.
+
+
+
 - **special_punctuation**: The proportion or count (depending on implementation) of special punctuation marks (like em dashes, ellipses, etc.) in the text. These can contribute to the overall tone and style.
+
+
+
 - **ttr (Type-Token Ratio)**: Calculated as the number of distinct words (types) divided by the total number of words (tokens) in the text. It reflects the lexical richness or vocabulary diversity. A higher TTR means a more diverse use of vocabulary.
 
 ## File Description
@@ -26,19 +47,23 @@ The AIGC detector is based on the simplest classification algorithm —— logis
 |   |-processed
 |   |    |-AIGC(foleder for AIGC files after pre process)
 |   |    |-human_being(foleder for human written files after pre process)
+|   |
 |   |-raw
 |        |-AIGC(put AIGC essay here, txt format plaease)
 |        |-human_being(put human_being essay here, txt format plaease)
+|
 |-model(folers for putting model)
 |   |-report.txt(report for training process)
 |   |-model.json(file storaging model parameters)
 |   |-scaler.pkl(file for deal the scale of inputs)
+|
 |-src
 |   |-IOTest.py(test for reading file)
 |   |-model.py(file for training model)
 |   |-paraCounter.py(file for satisticing features of paragraphs)
 |   |-paraCounterTest.py(file for testing paraCounter)
 |   |-preProcess.py(file for processing)
+|
 |-main_consle.py(programme in console)
 |-main_GUI.py(programmer with graphic user-interface)
 |-readme.md(giving information)
