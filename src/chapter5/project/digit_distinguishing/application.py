@@ -27,9 +27,13 @@ def process_image(image_path):
         img_batch = np.expand_dims(img_array, axis=0)
 
         # 模型预测
-        predictions = model.predict(img_batch)
-        predicted_class = np.argmax(predictions[0])
-        confidence = np.max(predictions[0]) * 100
+        logits = model.predict(img_batch)
+
+        # 手动应用softmax将logits转换为概率分布
+        probabilities = tf.nn.softmax(logits).numpy()
+
+        predicted_class = np.argmax(probabilities[0])
+        confidence = np.max(probabilities[0]) * 100  # 0-100%的合理范围
 
         return True, f"{os.path.basename(image_path)}\t识别数字: {predicted_class}\t概率: {confidence:.2f}%"
 
