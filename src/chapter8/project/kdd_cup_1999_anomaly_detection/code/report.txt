@@ -1,0 +1,49 @@
+数据集形状: (494021, 42)
+前5行数据:
+    duration protocol_type  ... dst_host_srv_rerror_rate   labels
+0         0           tcp  ...                      0.0  normal.
+1         0           tcp  ...                      0.0  normal.
+2         0           tcp  ...                      0.0  normal.
+3         0           tcp  ...                      0.0  normal.
+4         0           tcp  ...                      0.0  normal.
+
+[5 rows x 42 columns]
+
+标签分布（前10类）:
+ labels
+smurf.          280790
+neptune.        107201
+normal.          97278
+back.             2203
+satan.            1589
+ipsweep.          1247
+portsweep.        1040
+warezclient.      1020
+teardrop.          979
+pod.               264
+Name: count, dtype: int64
+
+过滤后数据集形状: (494012, 42) (移除样本数<5的类别)
+临时集过滤后形状: (247006, 42) (移除临时集中样本数<2的类别)
+
+数据集划分：
+训练集样本数: 247006 (50.0%)
+验证集样本数: 49401 (10.0%)
+测试集样本数: 197605 (40.0%)
+拟合完成（变换后特征）：
+count (log(x+10)) - 均值: 2.75, 方差: 0.21
+dst_bytes (log(x+1)) - 均值: 5.75, 方差: 7.99
+src_bytes (log(x+1)) - 均值: 5.20, 方差: 2.67
+srv_count (log(x+10)) - 均值: 2.85, 方差: 0.28
+
+验证集确定的异常阈值: -11.5653
+
+测试集评估结果：
+精确率: 0.9955
+召回率: 0.9819
+F1分数: 0.9887
+
+混淆矩阵:
+          预测正常   预测异常
+实际正常   38208     703       
+实际异常   2867      155827    
