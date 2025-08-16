@@ -8,8 +8,6 @@ from tensorflow.keras.layers import Input, Dense, Dot, Lambda,Dropout
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 
-
-
 def load_and_prepare_data(anime_dir,profile_dir,review_dir):
     # 加载数据
     print("加载csv数据...")
@@ -86,7 +84,8 @@ def build_model(user_features_dim,anime_features_dim,embedding_dim=15):
     user_input = Input(shape=(user_features_dim,),name='user_input')
     user_hidden1 = Dense(256,activation='relu')(user_input)
     user_hidden2 = Dense(128,activation='relu')(user_hidden1)
-    user_drop = Dropout(0.2)(user_hidden2)
+    user_hidden3 = Dense(64, activation='relu')(user_hidden2)
+    user_drop = Dropout(0.3)(user_hidden3)
     user_embedding = Dense(embedding_dim,activation=None,name='user_embedding')(user_drop)
     user_model = Model(inputs=user_input,outputs=user_embedding,name='user_tower')
 
@@ -94,7 +93,8 @@ def build_model(user_features_dim,anime_features_dim,embedding_dim=15):
     anime_input = Input(shape=(anime_features_dim,),name='anime_input')
     anime_hidden1 = Dense(256,activation='relu')(anime_input)
     anime_hidden2 = Dense(128,activation='relu')(anime_hidden1)
-    anime_drop = Dropout(0.2)(anime_hidden2)
+    anime_hidden3 = Dense(64, activation='relu')(anime_hidden2)
+    anime_drop = Dropout(0.3)(anime_hidden3)
     anime_embedding = Dense(embedding_dim,activation=None,name='anime_embedding')(anime_drop)
     anime_model = Model(inputs=anime_input,outputs=anime_embedding,name='anime_tower')
 
@@ -103,7 +103,7 @@ def build_model(user_features_dim,anime_features_dim,embedding_dim=15):
     anime_vector = anime_model(anime_input)
 
     dot_product = Dot(axes=1,name='dot_product')([user_vector,anime_vector])
-    output = Dense(1,activation=None,name='prediction')(dot_product)
+    output = Dense(1,activation=lambda x: 1+9 * tf.sigmoid(x),name='prediction')(dot_product)
 
     model = Model(inputs=[user_input,anime_input],outputs=output,name='rating_prediction_model')
 
@@ -143,7 +143,7 @@ def main():
         [X_user_train, X_anime_train],
         y_train,
         batch_size=256,
-        epochs=20,
+        epochs=50,
         validation_split=0.1,
         verbose=1
     )
