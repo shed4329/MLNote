@@ -71,6 +71,36 @@ def process_anime_date(anime_csv):
     anime_csv['season'] = anime_csv['starting_date'].apply(process_anime_date_extract_season)
     # 清理临时列
     anime_csv.drop(columns=['starting_date', 'aired'], inplace=True)
+
+    # 修复：处理episodes空值（使用平均值替换）
+    valid_episodes = anime_csv[anime_csv['episodes'].notna()]['episodes']
+    avg_episodes = valid_episodes.mean() if not valid_episodes.empty else 12
+    # 错误点修复：将valid_episodes改为avg_episodes
+    anime_csv['episodes'] = anime_csv['episodes'].mask(
+        anime_csv['episodes'].isna(),
+        avg_episodes  # 用平均值替换空值
+    )
+    # 重新计算替换后的空值数量（校验结果）
+    null_count = anime_csv['episodes'].isna().sum()
+    print(f"处理动漫起始集数：{null_count}个空值，替换为平均值{avg_episodes:.2f}")
+
+    # 筛选有效年份（>=1915且非空）
+    valid_years = anime_csv[
+        (anime_csv['starting_year'] >= 1915) &
+        (anime_csv['starting_year'].notna())
+        ]['starting_year']
+    # 计算平均值（若无有效数据则用2000填充）
+    avg_starting_year = valid_years.mean() if not valid_years.empty else 2000
+    # 替换异常值
+    anime_csv['starting_year'] = anime_csv['starting_year'].mask(
+        anime_csv['starting_year'].isna() | (anime_csv['starting_year'] < 1915),
+        avg_starting_year
+    )
+    # 输出处理信息
+    null_count = anime_csv['starting_year'].isna().sum()  # 替换后理论应为0，用于校验
+    low_count = (anime_csv['starting_year'] < 1915).sum()  # 替换后理论应为0，用于校验
+    print(f"处理动漫起始年份：{null_count}个空值和{low_count}个小于1915的值，替换为平均值{avg_starting_year:.2f}")
+
     # print("=" * 50)
     # print("日期处理完成")
     # print(anime_csv.head())
@@ -248,9 +278,32 @@ def process_profiles_csv(input_path, output_path,anime_csv):
     profiles_csv = profiles_csv.drop(columns='zodiac')
 
     # 提取出生年
+    # 提取出生年
     profiles_csv['birth_year'] = profiles_csv['birthday'].apply(extract_birth_year)
-    # print(profiles_csv.head())
     profiles_csv = profiles_csv.drop(columns='birthday')
+
+    # 新增：处理birth_year为nan或小于1915的情况，用平均值替代
+    # 筛选有效出生年份（>=1915且非空）
+    valid_birth_years = profiles_csv[
+        (profiles_csv['birth_year'] >= 1915) &
+        (profiles_csv['birth_year'].notna())
+        ]['birth_year']
+    # 计算平均值（若无有效数据则用2000填充）
+    avg_birth_year = valid_birth_years.mean() if not valid_birth_years.empty else 2000
+    # 替换异常值
+    profiles_csv['birth_year'] = profiles_csv['birth_year'].mask(
+        profiles_csv['birth_year'].isna() | (profiles_csv['birth_year'] < 1915),
+        avg_birth_year
+    )
+    # 输出处理信息
+    null_birth_count = profiles_csv['birth_year'].isna().sum()  # 替换后理论应为0
+    low_birth_count = (profiles_csv['birth_year'] < 1915).sum()  # 替换后理论应为0
+    print(
+        f"处理用户出生年份：{null_birth_count}个空值和{low_birth_count}个小于1915的值，替换为平均值{avg_birth_year:.2f}")
+
+    # print(profiles_csv.head())
+    if 'birthday' in profiles_csv.columns:
+        profiles_csv = profiles_csv.drop(columns='birthday')
 
     profiles_csv['gender'] = profiles_csv['gender'].fillna('Unknown')
     gender_onehot = pd.get_dummies(
@@ -306,6 +359,9 @@ def process_profiles_csv(input_path, output_path,anime_csv):
     # 5. 合并回用户表（此时列名已带favorite_前缀）
     profiles_csv = pd.concat([profiles_csv, user_genre_df], axis=1)
     profiles_csv.drop(columns=['fav_anime_uids','favorites_anime'],inplace=True)
+
+
+
 
     # 去重
     profiles_csv = profiles_csv.drop_duplicates(subset='profile',keep='first')
@@ -456,16 +512,16 @@ def process_review_csv(input_path, output_path):
 
 if __name__ == '__main__':
     # 路径作为参数传入，更灵活
-    # process_anime_csv(
-    #     input_path='../dataset/animes.csv',
-    #     output_path='../processed/animes.csv'
-    # )
+    process_anime_csv(
+        input_path='../dataset/animes.csv',
+        output_path='../processed/animes.csv'
+    )
     # 处理profiles.csv
-    # process_profiles_csv(
-    #     input_path='../dataset/profiles.csv',
-    #     output_path='../processed/profiles.csv',
-    #     anime_csv='../processed/animes.csv'
-    # )
+    process_profiles_csv(
+        input_path='../dataset/profiles.csv',
+        output_path='../processed/profiles.csv',
+        anime_csv='../processed/animes.csv'
+    )
     # 处理reviews.csv
     process_review_csv(
         input_path='../dataset/reviews.csv',

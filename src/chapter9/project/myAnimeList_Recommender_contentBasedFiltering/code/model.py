@@ -47,8 +47,7 @@ def load_and_prepare_data(anime_dir,profile_dir,review_dir):
     X_user_raw = merged_data[user_features_cols].values.astype(np.float32)
     X_anime_raw = merged_data[anime_features_cols].values.astype(np.float32)
     y_raw = merged_data['rating'].values.astype(np.float32)
-    # 将评分标签从 [1, 10] 归一化到 [0, 1]
-    # y_raw = (y_raw - 1) / 9.0
+
     print(f"原始评分范围: {y_raw.min()} - {y_raw.max()}")
     # 划分测试集和训练集
     print("开始划分测试集和训练集...")
