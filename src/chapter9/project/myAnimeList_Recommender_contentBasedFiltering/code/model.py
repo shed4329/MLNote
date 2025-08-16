@@ -143,7 +143,7 @@ def main():
         [X_user_train, X_anime_train],
         y_train,
         batch_size=256,
-        epochs=50,
+        epochs=80,
         validation_split=0.1,
         verbose=1
     )

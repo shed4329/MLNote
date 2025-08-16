@@ -54,36 +54,29 @@ def load_application_assets():
     """加载模型、数据和预训练的归一化器。"""
     print("--- 正在加载模型、数据和预训练的归一化器 ---")
 
-    # 重新定义你模型中的自定义激活函数
     def custom_activation(x):
         return 1 + 9 * tf.sigmoid(x)
 
-    # 关键修改：将 custom_objects 中的键设置为 '<lambda>'
     custom_objects = {'<lambda>': custom_activation}
 
     try:
-        # 加载数据集
         animes_df = pd.read_csv('../processed/animes.csv')
         profiles_df = pd.read_csv('../processed/profiles.csv')
 
-        # 加载预训练的scaler
         with open('../model/user_scaler.pkl', 'rb') as f:
             user_scaler = pickle.load(f)
         with open('../model/anime_scaler.pkl', 'rb') as f:
             anime_scaler = pickle.load(f)
 
-        # 加载模型，并传入 custom_objects
         main_model = load_model('../model/anime_recommender_regression_model.h5', custom_objects=custom_objects)
     except (FileNotFoundError, IOError, ValueError) as e:
         print(f"错误: 缺少必要的文件或文件已损坏 - {e}")
         return None, None, None, None, None, None, None
 
-    # 重命名 animes_df 中的 'uid' 列以匹配你的训练脚本
     animes_df.rename(columns={'uid': 'anime_uid'}, inplace=True)
     if 'favorites_anime' in profiles_df.columns:
         profiles_df.drop('favorites_anime', axis=1, inplace=True)
 
-    # 从主模型中提取用户塔和动漫塔
     user_model = main_model.get_layer('user_tower')
     anime_model = main_model.get_layer('anime_tower')
 
@@ -106,15 +99,31 @@ def get_user_and_anime_features(user_id, anime_id, animes_df, profiles_df, user_
     if len(anime_data) > 1:
         anime_data = anime_data.iloc[0:1]
 
+    # 使用 .loc 进行赋值，并填充NaN值
     user_data.loc[:, numerical_user_cols] = user_data[numerical_user_cols].fillna(0.0)
     anime_data.loc[:, numerical_anime_cols] = anime_data[numerical_anime_cols].fillna(0.0)
 
+    # 提取特征并归一化
     user_features = user_data[user_features_cols].values.astype(np.float32)
     anime_features = anime_data[anime_features_cols].values.astype(np.float32)
+
+    # 在归一化前检查NaN值
+    if np.isnan(user_features).any():
+        print("警告: 归一化前在用户特征中发现NaN值。")
+    if np.isnan(anime_features).any():
+        print("警告: 归一化前在动漫特征中发现NaN值。")
 
     user_features[:, :len(numerical_user_cols)] = user_scaler.transform(user_features[:, :len(numerical_user_cols)])
     anime_features[:, :len(numerical_anime_cols)] = anime_scaler.transform(
         anime_features[:, :len(numerical_anime_cols)])
+
+    # 在归一化后再次检查NaN值
+    if np.isnan(user_features).any():
+        print("错误: 归一化后在用户特征中发现NaN值。请检查原始数据。")
+        return None, None, None
+    if np.isnan(anime_features).any():
+        print("错误: 归一化后在动漫特征中发现NaN值。请检查原始数据。")
+        return None, None, None
 
     anime_title = anime_data['title'].iloc[0]
 
@@ -156,6 +165,11 @@ def recommend_top_n(user_id, n, main_model, animes_df, profiles_df, user_scaler,
     animes_df.loc[:, numerical_anime_cols] = animes_df[numerical_anime_cols].fillna(0.0)
     all_anime_features[:, :len(numerical_anime_cols)] = anime_scaler.transform(
         all_anime_features[:, :len(numerical_anime_cols)])
+
+    # 在预测前检查数据是否包含nan
+    if np.isnan(user_features).any() or np.isnan(all_anime_features).any():
+        print("错误: 准备进行预测的特征数组中发现NaN值。")
+        return
 
     num_animes = len(animes_df)
     repeated_user_features = np.repeat(user_features, num_animes, axis=0)
