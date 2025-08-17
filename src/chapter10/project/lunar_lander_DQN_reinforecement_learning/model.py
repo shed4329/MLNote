@@ -5,19 +5,22 @@ import os
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
-from collections import namedtuple, deque
+from collections import deque
 import warnings
 import gc
 
 # 忽略 deprecation 警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# 设置TensorFlow内存按需分配（保留此优化）
+# 设置TensorFlow内存按需分配并限制增长
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
         for gpu in gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
+        # 可选：设置GPU内存上限
+        # tf.config.experimental.set_virtual_device_configuration(gpus[0],
+        #    [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=4096)])
     except RuntimeError as e:
         print(e)
 
@@ -31,57 +34,56 @@ tf.random.set_seed(seed)
 if not os.path.exists('dqn_recordings'):
     os.makedirs('dqn_recordings')
 
-# 经验结构
-Experience = namedtuple('Experience', ['state', 'action', 'reward', 'next_state', 'done'])
 
+class MemoryEfficientReplayBuffer:
+    """内存高效的经验回放缓冲区，使用预分配数组存储"""
 
-class BalancedReplayBuffer:
-    """平衡型经验回放缓冲区"""
-
-    def __init__(self, capacity=70000):  # 中等容量（介于3万和10万之间）
-        self.memory = deque(maxlen=capacity)
-        self.state_shape = None
-        self.action_size = None
-
-    def set_shapes(self, state_shape, action_size):
+    def __init__(self, capacity=50000, state_shape=(8,), action_size=4):
+        self.capacity = capacity
         self.state_shape = state_shape
         self.action_size = action_size
 
+        # 预分配固定大小的数组（内存连续）
+        self.states = np.empty((capacity, *state_shape), dtype=np.float32)
+        self.actions = np.empty(capacity, dtype=np.int32)
+        self.rewards = np.empty(capacity, dtype=np.float32)
+        self.next_states = np.empty((capacity, *state_shape), dtype=np.float32)
+        self.dones = np.empty(capacity, dtype=np.bool_)
+
+        self.size = 0  # 当前存储的经验数量
+        self.index = 0  # 下一个要存储的位置
+
     def add(self, state, action, reward, next_state, done):
-        # 保持数据类型优化
-        state = np.asarray(state, dtype=np.float32)
-        next_state = np.asarray(next_state, dtype=np.float32)
-        action = np.int32(action)
-        reward = np.float32(reward)
-        done = np.bool_(done)
-        self.memory.append(Experience(state, action, reward, next_state, done))
+        """添加经验到缓冲区（覆盖旧数据）"""
+        # 直接写入预分配的数组，避免动态内存分配
+        self.states[self.index] = state
+        self.actions[self.index] = action
+        self.rewards[self.index] = reward
+        self.next_states[self.index] = next_state
+        self.dones[self.index] = done
+
+        self.index = (self.index + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size):
-        experiences = random.sample(self.memory, k=batch_size)
+        """采样批次数据（无动态内存分配）"""
+        indices = np.random.choice(self.size, batch_size, replace=False)
 
-        # 预分配数组但保持合理大小
-        states = np.empty((batch_size, *self.state_shape), dtype=np.float32)
-        actions = np.empty(batch_size, dtype=np.int32)
-        rewards = np.empty(batch_size, dtype=np.float32)
-        next_states = np.empty((batch_size, *self.state_shape), dtype=np.float32)
-        dones = np.empty(batch_size, dtype=np.bool_)
+        # 直接从预分配数组中切片，避免复制
+        states = self.states[indices]
+        actions = self.actions[indices]
+        rewards = self.rewards[indices].reshape(-1, 1)
+        next_states = self.next_states[indices]
+        dones = self.dones[indices].reshape(-1, 1).astype(np.uint8)
 
-        for i, e in enumerate(experiences):
-            states[i] = e.state
-            actions[i] = e.action
-            rewards[i] = e.reward
-            next_states[i] = e.next_state
-            dones[i] = e.done
-
-        return (states, actions, rewards[:, np.newaxis],
-                next_states, dones[:, np.newaxis].astype(np.uint8))
+        return (states, actions, rewards, next_states, dones)
 
     def __len__(self):
-        return len(self.memory)
+        return self.size
 
 
-def build_balanced_q_network(state_size, action_size, layer1_units=48, layer2_units=48):
-    """中等规模的Q网络（兼顾性能和速度）"""
+def build_compact_q_network(state_size, action_size, layer1_units=32, layer2_units=32):
+    """更紧凑的Q网络，减少参数数量"""
     model = tf.keras.Sequential([
         tf.keras.layers.Dense(layer1_units, activation='relu', input_shape=(state_size,)),
         tf.keras.layers.Dense(layer2_units, activation='relu'),
@@ -90,39 +92,46 @@ def build_balanced_q_network(state_size, action_size, layer1_units=48, layer2_un
     return model
 
 
-class BalancedDQNAgent:
-    """平衡型DQN智能体"""
+class MemoryFixedDQNAgent:
+    """修复内存泄漏的DQN智能体"""
 
-    def __init__(self, state_size, action_size, buffer_size=70000,
-                 batch_size=64,  # 恢复到中等批次大小
-                 gamma=0.99, learning_rate=1e-3, update_every=4):
+    def __init__(self, state_size, action_size, buffer_size=50000,
+                 batch_size=64, gamma=0.99, learning_rate=1e-3, update_every=4):
         self.state_size = state_size
         self.action_size = action_size
         self.batch_size = batch_size
         self.gamma = gamma
         self.update_every = update_every
 
-        # 中等规模网络
-        self.Q_network_local = build_balanced_q_network(state_size, action_size)
-        self.Q_network_target = build_balanced_q_network(state_size, action_size)
+        # 轻量级Q网络
+        self.Q_network_local = build_compact_q_network(state_size, action_size)
+        self.Q_network_target = build_compact_q_network(state_size, action_size)
 
         self.Q_network_local.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
             loss='mse'
         )
 
-        # 经验缓冲区
-        self.memory = BalancedReplayBuffer(capacity=buffer_size)
-        self.memory.set_shapes((state_size,), action_size)
+        # 初始化内存高效的经验回放缓冲区
+        self.memory = MemoryEfficientReplayBuffer(
+            capacity=buffer_size,
+            state_shape=(state_size,),
+            action_size=action_size
+        )
 
         self.t_step = 0
+        # 用于存储中间张量的临时变量，避免重复创建
+        self._tmp_tensors = {}
 
-    # 添加tf.function加速推理
     @tf.function
     def _predict_q(self, states):
         return self.Q_network_local(states, training=False)
 
     def step(self, state, action, reward, next_state, done):
+        # 确保状态是numpy数组且类型正确
+        state = np.asarray(state, dtype=np.float32).reshape(self.state_size)
+        next_state = np.asarray(next_state, dtype=np.float32).reshape(self.state_size)
+
         self.memory.add(state, action, reward, next_state, done)
 
         self.t_step = (self.t_step + 1) % self.update_every
@@ -130,20 +139,17 @@ class BalancedDQNAgent:
             if len(self.memory) > self.batch_size:
                 experiences = self.memory.sample(self.batch_size)
                 self.learn(experiences)
-                # 减少垃圾回收频率
-                if len(self.memory) % 10000 == 0:
-                    gc.collect()
 
     def act(self, state, eps=0.05):
-        state = state.reshape(1, -1).astype(np.float32)
+        state = np.asarray(state, dtype=np.float32).reshape(1, -1)
         if random.random() > eps:
-            # 用tf.function加速预测
-            q_values = self._predict_q(state)
-            return np.argmax(q_values.numpy()[0])
+            with tf.device('/GPU:0'):  # 强制使用GPU进行推理
+                q_values = self._predict_q(state)
+                action = np.argmax(q_values.numpy()[0])
+            return action
         else:
             return random.randint(0, self.action_size - 1)
 
-    # 添加tf.function加速学习
     @tf.function
     def _train_step(self, states, actions, q_targets):
         with tf.GradientTape() as tape:
@@ -159,24 +165,33 @@ class BalancedDQNAgent:
         return loss
 
     def learn(self, experiences):
+        # 将经验数据转换为TensorFlow张量（避免重复转换）
         states, actions, rewards, next_states, dones = experiences
 
-        # 批量计算目标Q值（使用完整批次）
-        q_targets_next = self.Q_network_target.predict(next_states, verbose=0)
-        q_targets_next = np.max(q_targets_next, axis=1).reshape(-1, 1)
-        q_targets = rewards + self.gamma * q_targets_next * (1 - dones)
+        with tf.device('/GPU:0'):  # 所有计算在GPU上进行，减少数据传输
+            # 计算目标Q值
+            q_targets_next = self.Q_network_target.predict_on_batch(next_states)
+            q_targets_next = np.max(q_targets_next, axis=1).reshape(-1, 1)
+            q_targets = rewards + self.gamma * q_targets_next * (1 - dones)
 
-        # 使用tf.function加速训练步骤
-        self._train_step(states, actions, q_targets)
+            # 转换为TensorFlow张量
+            states_tf = tf.convert_to_tensor(states, dtype=tf.float32)
+            actions_tf = tf.convert_to_tensor(actions, dtype=tf.int32)
+            q_targets_tf = tf.convert_to_tensor(q_targets, dtype=tf.float32)
 
-        # 完整更新目标网络（而非分批）
-        self.soft_update(self.Q_network_local, self.Q_network_target, 1e-3)
+            # 训练步骤
+            self._train_step(states_tf, actions_tf, q_targets_tf)
 
-        # 只清理大对象
-        del q_targets_next, q_targets
+            # 更新目标网络
+            self.soft_update(self.Q_network_local, self.Q_network_target, 1e-3)
+
+        # 显式清理所有临时变量
+        del states, actions, rewards, next_states, dones
+        del q_targets_next, q_targets, states_tf, actions_tf, q_targets_tf
+        tf.keras.backend.clear_session()  # 清理Keras会话中的临时图
 
     def soft_update(self, local_model, target_model, tau=1e-2):
-        # 恢复完整更新（速度更快）
+        # 一次更新所有权重，然后立即清理
         local_weights = local_model.get_weights()
         target_weights = target_model.get_weights()
 
@@ -184,70 +199,103 @@ class BalancedDQNAgent:
             target_weights[i] = tau * local_weights[i] + (1 - tau) * target_weights[i]
 
         target_model.set_weights(target_weights)
+
+        # 立即释放权重占用的内存
         del local_weights, target_weights
 
 
 def dqn(env, agent, n_episodes=1200, max_t=500, eps_start=1.0, eps_end=0.01, eps_decay=0.995, record_every=20):
-    """平衡型训练函数"""
+    """内存优化的训练函数"""
     scores = []
     scores_window = deque(maxlen=100)
     eps = eps_start
     original_env = env
+    # 只创建一次录屏环境的基础配置
+    video_env = None
 
     for i_episode in range(1, n_episodes + 1):
         record_this_episode = (i_episode % record_every == 0) or (i_episode == 1)
         current_env = original_env
 
         if record_this_episode:
-            current_env = RecordVideo(
+            # 每次录屏都创建新的环境，避免累积
+            if video_env is not None:
+                video_env.close()
+                del video_env
+                gc.collect()
+
+            video_env = RecordVideo(
                 original_env,
                 video_folder='dqn_recordings',
                 episode_trigger=lambda x: True,
                 name_prefix=f"episode_{i_episode}"
             )
+            current_env = video_env
 
+        # 初始化回合
         state = current_env.reset()
         if isinstance(state, tuple):
             state = state[0]
+        state = np.asarray(state, dtype=np.float32)
         score = 0
 
         for t in range(max_t):
             action = agent.act(state, eps)
             next_state, reward, done, _ = current_env.step(action)
+            if isinstance(next_state, tuple):
+                next_state = next_state[0]
+
+            # 学习步骤
             agent.step(state, action, reward, next_state, done)
-            state = next_state
+
+            # 更新状态（避免保留旧状态引用）
+            state = np.asarray(next_state, dtype=np.float32)
             score += reward
 
             if done:
                 break
 
+        # 记录分数并清理
         scores_window.append(score)
         scores.append(score)
         eps = max(eps_end, eps_decay * eps)
 
+        # 打印进度
         print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}', end='')
         if i_episode % 100 == 0:
             print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}')
-            # 每100回合回收一次内存
-            gc.collect()
 
+        # 任务完成条件
         if np.mean(scores_window) >= 200.0:
             print("\n平均分超过200分，任务完成")
             print(f'\nEnvironment solved in {i_episode - 100} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
-            agent.Q_network_local.save('lunar_lander_dqn_balanced.h5')
+            agent.Q_network_local.save('lunar_lander_dqn_memory_fixed.h5')
             if record_this_episode:
                 current_env.close()
             break
 
+        # 录屏结束后清理
         if record_this_episode:
             current_env.close()
-            current_env = None
+            del current_env
+            gc.collect()  # 强制垃圾回收
+
+        # 每个episode后清理一次，防止内存累积
+        del state, score
+        gc.collect()
+
+    # 最终清理
+    if video_env is not None:
+        video_env.close()
+        del video_env
+    original_env.close()
+    gc.collect()
 
     return scores
 
 
 def test_agent(agent, num_episodes=5, load_checkpoint=True):
-    """测试函数保持不变"""
+    """测试函数"""
     env = gym.make('LunarLander-v2')
     if hasattr(env, 'reset') and 'seed' in env.reset.__code__.co_varnames:
         env.reset(seed=seed)
@@ -267,7 +315,7 @@ def test_agent(agent, num_episodes=5, load_checkpoint=True):
 
     if load_checkpoint:
         try:
-            agent.Q_network_local.load_weights('lunar_lander_dqn_balanced.h5')
+            agent.Q_network_local.load_weights('lunar_lander_dqn_memory_fixed.h5')
             print("模型加载成功，开始测试...")
         except Exception as e:
             print(f"加载模型文件失败: {e}")
@@ -278,23 +326,30 @@ def test_agent(agent, num_episodes=5, load_checkpoint=True):
         state = env.reset()
         if isinstance(state, tuple):
             state = state[0]
+        state = np.asarray(state, dtype=np.float32)
         score = 0
 
         while True:
             env.render()
             action = agent.act(state, eps=0.0)
             next_state, reward, done, _ = env.step(action)
-            state = next_state
+            if isinstance(next_state, tuple):
+                next_state = next_state[0]
+            state = np.asarray(next_state, dtype=np.float32)
             score += reward
 
             if done:
                 print(f"测试 Episode {i + 1} Score: {score:.2f}")
                 break
 
+        del state, score, next_state, reward, done
+
     env.close()
+    gc.collect()
 
 
 if __name__ == '__main__':
+    # 创建训练环境
     env = gym.make('LunarLander-v2')
     if hasattr(env, 'reset') and 'seed' in env.reset.__code__.co_varnames:
         env.reset(seed=seed)
@@ -304,22 +359,30 @@ if __name__ == '__main__':
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
 
-    # 平衡型智能体参数
-    agent = BalancedDQNAgent(
+    # 内存优化的智能体
+    agent = MemoryFixedDQNAgent(
         state_size=state_size,
         action_size=action_size,
-        buffer_size=70000,  # 中等缓冲区
-        batch_size=64  # 中等批次
+        buffer_size=50000,  # 控制缓冲区大小
+        batch_size=64
     )
 
     scores = dqn(env=env, agent=agent, record_every=20)
 
-    print("训练分数列表:", scores)
-
+    # 绘制训练曲线
     plt.plot(np.arange(len(scores)), scores)
     plt.ylabel('Score')
     plt.xlabel('Episode #')
-    plt.title('Balanced Training Progress')
+    plt.title('Memory Fixed Training Progress')
     plt.show()
 
+    # 清理训练相关变量
+    del env, scores
+    gc.collect()
+
+    # 测试
     test_agent(agent=agent)
+
+    # 最终清理
+    del agent
+    gc.collect()
