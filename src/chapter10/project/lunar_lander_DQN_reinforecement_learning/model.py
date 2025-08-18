@@ -49,26 +49,31 @@ if not os.path.exists('dqn_recordings'):
     os.makedirs('dqn_recordings')
 
 
-class MemoryEfficientReplayBuffer:
-    """内存高效的经验回放缓冲区，使用预分配数组存储"""
-
-    def __init__(self, capacity=50000, state_shape=(8,), action_size=4):
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity=100000, state_shape=(8,)):
         self.capacity = capacity
         self.state_shape = state_shape
-        self.action_size = action_size
+        self.alpha = 0.6  # 优先级权重（0=随机，1=完全按优先级）
+        self.beta = 0.4  # 重要性采样权重（初始值）
+        self.beta_increment = 0.001  # 每步增加beta，最终到1.0
 
-        # 预分配固定大小的数组（内存连续）
+        # 预分配数组
         self.states = np.empty((capacity, *state_shape), dtype=np.float32)
         self.actions = np.empty(capacity, dtype=np.int32)
         self.rewards = np.empty(capacity, dtype=np.float32)
         self.next_states = np.empty((capacity, *state_shape), dtype=np.float32)
         self.dones = np.empty(capacity, dtype=np.bool_)
+        self.priorities = np.empty(capacity, dtype=np.float32)  # 优先级（TD误差）
 
-        self.size = 0  # 当前存储的经验数量
-        self.index = 0  # 下一个要存储的位置
+        self.size = 0
+        self.index = 0
 
     def add(self, state, action, reward, next_state, done):
-        """添加经验到缓冲区（覆盖旧数据）"""
+        # 新样本默认最高优先级（避免优先级为0）
+        max_prio = self.priorities.max() if self.size > 0 else 1.0
+        self.priorities[self.index] = max_prio
+
+        # 存储样本
         self.states[self.index] = state
         self.actions[self.index] = action
         self.rewards[self.index] = reward
@@ -77,24 +82,41 @@ class MemoryEfficientReplayBuffer:
 
         self.index = (self.index + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
+        self.beta = min(1.0, self.beta + self.beta_increment)  # 逐步增加beta
 
     def sample(self, batch_size):
-        """采样批次数据（无动态内存分配）"""
-        indices = np.random.choice(self.size, batch_size, replace=False)
+        if self.size == 0:
+            return None
 
+        # 按优先级采样
+        prios = self.priorities[:self.size]
+        probs = prios ** self.alpha
+        probs /= probs.sum()
+        indices = np.random.choice(self.size, batch_size, p=probs, replace=False)
+
+        # 计算重要性权重（减少高优先级样本的过度影响）
+        weights = (self.size * probs[indices]) ** (-self.beta)
+        weights /= weights.max()  # 归一化
+
+        # 提取样本
         states = self.states[indices]
         actions = self.actions[indices]
         rewards = self.rewards[indices].reshape(-1, 1)
         next_states = self.next_states[indices]
         dones = self.dones[indices].reshape(-1, 1).astype(np.uint8)
 
-        return (states, actions, rewards, next_states, dones)
+        return (states, actions, rewards, next_states, dones, indices, weights)
+
+    def update_priorities(self, indices, errors):
+        # 用TD误差更新优先级（误差越大，优先级越高）
+        for i, idx in enumerate(indices):
+            self.priorities[idx] = abs(errors[i]) + 1e-6  # 加小值避免0优先级
 
     def __len__(self):
         return self.size
 
 
-def build_64unit_q_network(state_size, action_size, layer1_units=64, layer2_units=64):
+def build_64unit_q_network(state_size, action_size, layer1_units=128, layer2_units=64):
     """64单元网络结构，保持学习能力"""
     model = tf.keras.Sequential([
         tf.keras.layers.Dense(layer1_units, activation='relu', input_shape=(state_size,)),
@@ -109,7 +131,7 @@ def build_64unit_q_network(state_size, action_size, layer1_units=64, layer2_unit
 class OptimizedDQNAgent:
     """优化的DQN智能体，保持64单元网络"""
 
-    def __init__(self, state_size, action_size, buffer_size=50000,
+    def __init__(self, state_size, action_size, buffer_size=100000,
                  batch_size=64, gamma=0.99, learning_rate=5e-4,  # 降低学习率提高稳定性
                  update_every=4):  # 更频繁更新目标网络
         self.state_size = state_size
@@ -130,10 +152,9 @@ class OptimizedDQNAgent:
         )
 
         # 经验回放缓冲区
-        self.memory = MemoryEfficientReplayBuffer(
-            capacity=buffer_size,
-            state_shape=(state_size,),
-            action_size=action_size
+        self.memory = PrioritizedReplayBuffer(
+            capacity=buffer_size,  # 增大容量到10万，增加样本多样性
+            state_shape=(state_size,)
         )
 
         self.t_step = 0
@@ -177,27 +198,44 @@ class OptimizedDQNAgent:
         return loss
 
     def learn(self, experiences):
-        states, actions, rewards, next_states, dones = experiences
+        states, actions, rewards, next_states, dones, indices, weights  = experiences
 
         with tf.device('/GPU:0'):
-            # 使用predict_on_batch替代predict，避免数据管道优化
+            # 计算Q_targets（同Double DQN）
+            q_local_next = self.Q_network_local.predict_on_batch(next_states)
+            best_actions = np.argmax(q_local_next, axis=1)
             q_targets_next = self.Q_network_target.predict_on_batch(next_states)
-            q_targets_next = np.max(q_targets_next, axis=1).reshape(-1, 1)
+            q_targets_next = q_targets_next[np.arange(len(q_targets_next)), best_actions].reshape(-1, 1)
             q_targets = rewards + self.gamma * q_targets_next * (1 - dones)
 
-            # 转换为TensorFlow张量
+            # 计算当前Q值和TD误差（用于更新优先级）
+            q_expected = self.Q_network_local.predict_on_batch(states)
+            q_expected = q_expected[np.arange(len(q_expected)), actions].reshape(-1, 1)
+            td_errors = q_expected - q_targets  # TD误差
+
+            # 带权重的损失（重要性采样权重）
             states_tf = tf.convert_to_tensor(states, dtype=tf.float32)
             actions_tf = tf.convert_to_tensor(actions, dtype=tf.int32)
             q_targets_tf = tf.convert_to_tensor(q_targets, dtype=tf.float32)
+            weights_tf = tf.convert_to_tensor(weights.reshape(-1, 1), dtype=tf.float32)
 
-            # 训练步骤
-            self._train_step(states_tf, actions_tf, q_targets_tf)
+            with tf.GradientTape() as tape:
+                q_pred = self.Q_network_local(states_tf, training=True)
+                mask = tf.one_hot(actions_tf, self.action_size)
+                q_pred = tf.reduce_sum(tf.multiply(q_pred, mask), axis=1, keepdims=True)
+                loss = tf.reduce_mean(weights_tf * tf.square(q_targets_tf - q_pred))  # 加权损失
 
-            # 更新目标网络
+            grads = tape.gradient(loss, self.Q_network_local.trainable_variables)
+            self.optimizer.apply_gradients(zip(grads, self.Q_network_local.trainable_variables))
+
+            # 更新样本优先级
+            self.memory.update_priorities(indices, td_errors.flatten())
+
+            # 软更新目标网络
             self.soft_update(self.Q_network_local, self.Q_network_target, 1e-3)
 
         # 清理临时变量
-        del states, actions, rewards, next_states, dones
+        del states, actions, rewards, next_states, dones, indices, weights
         del q_targets_next, q_targets, states_tf, actions_tf, q_targets_tf
         tf.keras.backend.clear_session()
 
@@ -273,8 +311,8 @@ def dqn(env, agent, n_episodes=1500, max_t=1000,  # 增加最大步数
             print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}')
 
         # 任务完成条件
-        if np.mean(scores_window) >= 200.0:
-            print("\n平均分超过200分，任务完成")
+        if np.mean(scores_window) >= 250.0:
+            print("\n平均分超过250分，任务完成")
             print(f'Environment solved in {i_episode} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
             agent.Q_network_local.save('lunar_lander_dqn_64units.h5')
             if record_this_episode:
@@ -372,6 +410,19 @@ def custom_reward(state, action, original_reward):
     # 基础奖励（保留原始奖励的核心逻辑）
     reward = original_reward
 
+    if action!=0:
+        reward -= 0.02
+    if action == 1:  # 左引擎点火
+        if theta < 0:  # 当前已向右倾斜，左引擎点火会加剧倾斜
+            reward -= 0.15  # 惩罚值可根据效果调整
+        elif theta > 0.10:
+            reward += 0.05
+
+    elif action == 3:  # 右引擎点火
+        if theta > 0:  # 当前已向左倾斜，右引擎点火会加剧倾斜
+            reward -= 0.15  # 惩罚值可根据效果调整
+        elif theta < -0.10:
+            reward += 0.05
     # 1.高空区向中间靠
     if y>0.9:
         reward += (0.5-abs(x))*0.8
@@ -389,7 +440,7 @@ def custom_reward(state, action, original_reward):
         elif abs(x) >0.4:
             reward -= (abs(x)-0.4)
         reward += (0.15-abs(vx))*0.8
-        reward += (0.9-y)*0.1
+        reward += (0.9-y)*0.15
         if vy >0:
             reward -= 4*vy
         elif vy<-0.5:
@@ -402,7 +453,7 @@ def custom_reward(state, action, original_reward):
     else:
         reward += (0.1 - abs(x)) * 1.5
         reward += (0.05 - abs(vx)) * 0.8
-        reward += (0.4 - y) * 0.15
+        reward += (0.4 - y) * 0.25
         if vy > 0:
             reward -= 8 * vy
         elif vy < -0.5:
@@ -418,14 +469,14 @@ def custom_reward(state, action, original_reward):
             reward += 1.0
             # 垂直速度小（软着陆）
             if abs(vy) < 0.3:
-                reward += 1.5
+                reward += 2
             # 水平速度小且位置居中
             if abs(vx) < 0.2:
-                reward += 1.5
+                reward += 2
             if abs(x) < 0.1:
-                reward += 1.5
+                reward += 2
             if abs(theta) < 0.05:
-                reward += 1.5
+                reward += 2
     return reward
 
 if __name__ == '__main__':
@@ -443,7 +494,7 @@ if __name__ == '__main__':
     agent = OptimizedDQNAgent(
         state_size=state_size,
         action_size=action_size,
-        buffer_size=50000,
+        buffer_size=100000,
         batch_size=128
     )
 
