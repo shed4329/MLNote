@@ -412,17 +412,37 @@ def custom_reward(state, action, original_reward):
 
     if action!=0:
         reward -= 0.02
-    if action == 1:  # 左引擎点火
-        if theta < 0:  # 当前已向右倾斜，左引擎点火会加剧倾斜
-            reward -= 0.15  # 惩罚值可根据效果调整
-        elif theta > 0.10:
-            reward += 0.05
+    if action == 1:  # 左引擎点火（左倾力矩）
+        # 1. 惩罚加剧左倾的行为（倾斜越严重，惩罚越重）
+        if theta < 0:
+            reward -= 0.1 * abs(theta) * 3  # 左倾时点火，惩罚随倾斜度增加（最高约-0.15）
+        # 2. 奖励纠正右倾的行为（倾斜越严重，奖励越多）
+        elif theta > 0:
+            # 微小右倾（0~0.1）：轻微奖励，鼓励微调
+            if theta <= 0.1:
+                reward += 0.03 * (theta / 0.1)  # 0.03~0.03线性增长
+            # 较大右倾（>0.1）：更高奖励，强制纠正
+            else:
+                reward += 0.05 + 0.02 * (theta - 0.1)  # 0.05~更高（上限0.1）
+        # 3. 姿态正时点火（无意义动作）：轻微惩罚
+        else:
+            reward -= 0.02
 
-    elif action == 3:  # 右引擎点火
-        if theta > 0:  # 当前已向左倾斜，右引擎点火会加剧倾斜
-            reward -= 0.15  # 惩罚值可根据效果调整
-        elif theta < -0.10:
-            reward += 0.05
+    elif action == 3:  # 右引擎点火（右倾力矩）
+        # 1. 惩罚加剧右倾的行为
+        if theta > 0:
+            reward -= 0.1 * abs(theta) * 3  # 右倾时点火，惩罚随倾斜度增加
+        # 2. 奖励纠正左倾的行为
+        elif theta < 0:
+            # 微小左倾（-0.1~0）：轻微奖励
+            if theta >= -0.1:
+                reward += 0.03 * (abs(theta) / 0.1)  # 0.03~0.03线性增长
+            # 较大左倾（<-0.1）：更高奖励
+            else:
+                reward += 0.05 + 0.02 * (abs(theta) - 0.1)  # 0.05~更高（上限0.1）
+        # 3. 姿态正时点火：轻微惩罚
+        else:
+            reward -= 0.02
     # 1.高空区向中间靠
     if y>0.9:
         reward += (0.5-abs(x))*0.8
