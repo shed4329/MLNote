@@ -1,3 +1,4 @@
+from datetime import datetime
 import random
 import gym
 from gym.wrappers import RecordVideo
@@ -17,12 +18,24 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
         for gpu in gpus:
+            # 1. 允许GPU动态增长显存（但取消严格限制）
             tf.config.experimental.set_memory_growth(gpu, True)
+
+            # 2. 可选：设置显存上限（根据你的GPU显存调整，例如8GB显卡设为6144MB）
+            tf.config.experimental.set_virtual_device_configuration(
+                gpus[0],  # 指定使用第0块GPU
+                [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=6144)]
+            )
+
+            # 3. 启用XLA加速（提高GPU计算效率）
+            # tf.config.optimizer.set_jit(True)  # 重新开启XLA
+
     except RuntimeError as e:
         print(e)
 
 # 禁用TensorFlow数据优化（解决CANCELLED警告）
 tf.config.optimizer.set_jit(False)  # 关闭XLA优化
+# mixed_precision.set_global_policy('mixed_float16')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 减少TensorFlow日志输出
 
 # 随机种子
@@ -98,7 +111,7 @@ class OptimizedDQNAgent:
 
     def __init__(self, state_size, action_size, buffer_size=50000,
                  batch_size=64, gamma=0.99, learning_rate=5e-4,  # 降低学习率提高稳定性
-                 update_every=2):  # 更频繁更新目标网络
+                 update_every=4):  # 更频繁更新目标网络
         self.state_size = state_size
         self.action_size = action_size
         self.batch_size = batch_size
@@ -125,7 +138,7 @@ class OptimizedDQNAgent:
 
         self.t_step = 0
 
-    @tf.function
+    @tf.function  # XLA编译加速
     def _predict_q(self, states):
         return self.Q_network_local(states, training=False)
 
@@ -239,6 +252,8 @@ def dqn(env, agent, n_episodes=1500, max_t=1000,  # 增加最大步数
             next_state, reward, done, _ = current_env.step(action)
             if isinstance(next_state, tuple):
                 next_state = next_state[0]
+            # 应用自定义奖励（核心修改）
+            reward = custom_reward(state, action, reward)
 
             agent.step(state, action, reward, next_state, done)
             state = np.asarray(next_state, dtype=np.float32)
@@ -260,7 +275,7 @@ def dqn(env, agent, n_episodes=1500, max_t=1000,  # 增加最大步数
         # 任务完成条件
         if np.mean(scores_window) >= 200.0:
             print("\n平均分超过200分，任务完成")
-            print(f'Environment solved in {i_episode - 100} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
+            print(f'Environment solved in {i_episode} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
             agent.Q_network_local.save('lunar_lander_dqn_64units.h5')
             if record_this_episode:
                 current_env.close()
@@ -284,7 +299,6 @@ def dqn(env, agent, n_episodes=1500, max_t=1000,  # 增加最大步数
     gc.collect()
 
     return scores
-
 
 def test_agent(agent, num_episodes=5, load_checkpoint=True):
     """测试函数"""
@@ -340,6 +354,80 @@ def test_agent(agent, num_episodes=5, load_checkpoint=True):
     gc.collect()
 
 
+def custom_reward(state, action, original_reward):
+    """
+    自定义奖励函数，针对三种极端行为优化
+    state解析：[x, y, vx, vy, theta, vtheta, left_leg, right_leg]
+    - x: 水平位置（-1.5到1.5）
+    - y: 高度（0为地面，最高~1.5）
+    - vx: 水平速度
+    - vy: 垂直速度（负为下降）
+    - theta: 角度（弧度，正负表示左右倾斜）
+    - vtheta: 角速度
+    - left_leg/right_leg: 是否触地（1=触地）
+    """
+    # 解析状态变量
+    x, y, vx, vy, theta, vtheta, left_leg, right_leg = state
+
+    # 基础奖励（保留原始奖励的核心逻辑）
+    reward = original_reward
+
+    # 1.高空区向中间靠
+    if y>0.9:
+        reward += (0.5-abs(x))*0.8
+        if vy>0:
+            reward -= 2*vy
+        else:
+            reward += 0.1
+        reward += 0.2*(1.35-y)
+        reward += (0.15-abs(theta))*0.8
+        reward += (0.15-abs(vtheta))*0.8
+    # 中空区，平稳下落
+    elif y>0.4:
+        if abs(x) < 0.3:
+            reward += (0.3-abs(x))*0.6
+        elif abs(x) >0.4:
+            reward -= (abs(x)-0.4)
+        reward += (0.15-abs(vx))*0.8
+        reward += (0.9-y)*0.1
+        if vy >0:
+            reward -= 4*vy
+        elif vy<-0.5:
+            reward -= 2 * abs(vy)
+        else:
+            reward += 0.12
+        reward += (0.1-abs(theta))*1.2
+        reward += (0.1-abs(vtheta))*1.2
+    # 低空区
+    else:
+        reward += (0.1 - abs(x)) * 1.5
+        reward += (0.05 - abs(vx)) * 0.8
+        reward += (0.4 - y) * 0.15
+        if vy > 0:
+            reward -= 8 * vy
+        elif vy < -0.5:
+            reward -= (4 * abs(vy)-1)
+        elif vy < -0.25:
+            reward -= 2 * abs(vy)
+        else:
+            reward += 0.15
+        reward += (0.05 - abs(theta)) * 2
+        reward += (0.05 - abs(vtheta)) * 2
+        # 着陆瞬间（腿触地）的姿态奖励
+        if left_leg == 1 or right_leg == 1:
+            reward += 1.0
+            # 垂直速度小（软着陆）
+            if abs(vy) < 0.3:
+                reward += 1.5
+            # 水平速度小且位置居中
+            if abs(vx) < 0.2:
+                reward += 1.5
+            if abs(x) < 0.1:
+                reward += 1.5
+            if abs(theta) < 0.05:
+                reward += 1.5
+    return reward
+
 if __name__ == '__main__':
     # 创建训练环境
     env = gym.make('LunarLander-v2')
@@ -356,10 +444,11 @@ if __name__ == '__main__':
         state_size=state_size,
         action_size=action_size,
         buffer_size=50000,
-        batch_size=64
+        batch_size=128
     )
 
-    scores = dqn(env=env, agent=agent, record_every=50)
+    print(f"开始时间:{datetime.now()}")
+    scores = dqn(env=env, agent=agent, record_every=25)
 
     # 绘制训练曲线
     plt.plot(np.arange(len(scores)), scores)
