@@ -518,7 +518,7 @@ if __name__ == '__main__':
         batch_size=128
     )
 
-    print(f"开始时间:{datetime.now()}")
+    # print(f"开始时间:{datetime.now()}")
     scores = dqn(env=env, agent=agent, record_every=25)
 
     # 绘制训练曲线
