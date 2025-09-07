@@ -21,19 +21,22 @@ np.random.seed(42)
 DATA_DIR = './data'         # 数据集目录
 TRAIN_FILE = 'train.csv'    # 训练集文件名
 TEST_FILE = 'test.csv'      # 测试集文件名
-MAX_VOCAB_SIZE = 20000      # 词汇表大小
-MAX_SEQ_LEN = 50            # 序列最大长度
-BATCH_SIZE=64               # 批次大小
-EPOCHS = 20                 # 训练轮数
+MAX_VOCAB_SIZE = 32000      # 词汇表大小
+MAX_SEQ_LEN = 30            # 序列最大长度
+BATCH_SIZE=128               # 批次大小
+EPOCHS = 300                 # 训练轮数
 REPORT_DIR = './report'     # 训练相关资料
 MODEL_DIR = './models'      # 模型保存目录
+PERIOD = 10                  # 检查点每几次检查一下
+WARMUP_STEPS = 10000        # 预热步数
+PATIENCE = 5               # 早停耐心
 
 # Transformer参数配置
-NUM_LAYERS = 4              # encoder和decoder层数
-D_MODEL = 128               # 模型维度
-NUM_HEADS = 4               # 多头注意力的头数
-UNIT = 128                  # 前馈神经网络的隐藏层单元数
-DROPOUT_RATE = 0.1          # Dropout比率
+NUM_LAYERS = 6              # encoder和decoder层数
+D_MODEL = 256               # 模型维度
+NUM_HEADS = 8               # 多头注意力的头数
+UNIT = 1024                  # 前馈神经网络的隐藏层单元数
+DROPOUT_RATE = 0.15          # Dropout比率
 
 # 加载数据
 def load_data(data_dir,filename):
@@ -181,17 +184,15 @@ def encoder_layer(units,d_model,num_heads,dropout,name="encoder layer"):
 # Transformer编码器
 def encoder(vocab_size,num_layers,units,d_model,num_heads,dropout,name="encoder"):
     inputs = Input(shape=(None,),name="inputs")
+    # Add an input for the padding mask
+    padding_mask = Input(shape=(1, 1, None), name="padding_mask")
 
-    # 嵌入层
     embedding = Embedding(vocab_size,d_model)(inputs)
     embedding *= tf.math.sqrt(tf.cast(d_model,tf.float32))
-
-    # 位置编码
     embedding = PositionEncoding(vocab_size,d_model)(embedding)
 
     outputs = Dropout(rate=dropout)(embedding)
 
-    # 堆叠多个编码器层
     for i in range(num_layers):
         outputs = EncoderLayer(
             units=units,
@@ -199,16 +200,16 @@ def encoder(vocab_size,num_layers,units,d_model,num_heads,dropout,name="encoder"
             num_heads=num_heads,
             dropout=dropout,
             name=f"encoder_layer_{i}"
-        )(outputs)
+        )(outputs, padding_mask) # Pass the mask to the layer
 
-    return Model(inputs=inputs, outputs=outputs, name=name)
+    # The model now has two inputs
+    return Model(inputs=[inputs, padding_mask], outputs=outputs, name=name)
 
 
 # Transformer解码器层
 class EncoderLayer(tf.keras.layers.Layer):
     def __init__(self, units, d_model, num_heads, dropout, **kwargs):
         super().__init__(**kwargs)
-        # 初始化所有子层，包括注意力、Dropout、归一化和前馈网络
         self.attention = MultiHeadAttention(key_dim=d_model // num_heads, num_heads=num_heads, name="attention")
         self.dropout1 = Dropout(rate=dropout)
         self.norm1 = LayerNormalization(epsilon=1e-6)
@@ -220,23 +221,20 @@ class EncoderLayer(tf.keras.layers.Layer):
         self.dropout2 = Dropout(rate=dropout)
         self.norm2 = LayerNormalization(epsilon=1e-6)
 
-    def call(self, inputs, training=False):
-        # 注意力子层：输入作为query、key和value
+    def call(self, inputs, mask, training=False):  # Add 'mask' argument
+        # Pass the mask to the attention layer
         attn_output = self.attention(
             query=inputs,
             value=inputs,
             key=inputs,
-            attention_mask=None,
+            attention_mask=mask,  # Use the provided mask
             training=training
         )
         attn_output = self.dropout1(attn_output, training=training)
-        # 添加残差连接和层归一化
         out1 = self.norm1(inputs + attn_output)
 
-        # 前馈网络子层
         ffn_output = self.ffn(out1)
         ffn_output = self.dropout2(ffn_output, training=training)
-        # 添加残差连接和层归一化
         out2 = self.norm2(out1 + ffn_output)
 
         return out2
@@ -320,15 +318,13 @@ def transformer(
         num_layers,units,d_model,num_heads,dropout,
         name="transformer"
 ):
-    # 编码器输入(英文)
     inputs = Input(shape=(None,),name="inputs")
-    # 解码器输入(中文)
     dec_inputs = Input(shape=(None,),name="dec_inputs")
 
-    # 获取掩码
-    _, combined_mask, padding_mask = create_masks(inputs, dec_inputs)
+    # Capture all three masks with clear names
+    enc_padding_mask, combined_mask, dec_padding_mask = create_masks(inputs, dec_inputs)
 
-    # 编码器
+    # Pass the English input AND its padding mask to the encoder
     enc_outputs = encoder(
         vocab_size=vocab_size_enc,
         num_layers=num_layers,
@@ -336,9 +332,8 @@ def transformer(
         d_model=d_model,
         num_heads=num_heads,
         dropout=dropout
-    )(inputs)
+    )([inputs, enc_padding_mask]) # Pass as a list of inputs
 
-    # 解码器
     dec_outputs = decoder(
         vocab_size=vocab_size_dec,
         num_layers=num_layers,
@@ -346,16 +341,15 @@ def transformer(
         d_model=d_model,
         num_heads=num_heads,
         dropout=dropout
-    )(inputs=[dec_inputs, enc_outputs, combined_mask, padding_mask])
+    )(inputs=[dec_inputs, enc_outputs, combined_mask, dec_padding_mask]) # Note: your dec_padding_mask was already correct
 
-    # 输出层
     outputs = Dense(units=vocab_size_dec,activation='softmax')(dec_outputs)
 
     return Model(inputs=[inputs,dec_inputs],outputs=outputs,name=name)
 
 # 自定义学习调度器，先热身，后衰减
 class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self,d_model, warmup_steps=10000):
+    def __init__(self,d_model, warmup_steps=WARMUP_STEPS):
        super(CustomSchedule, self).__init__()
 
        self.d_model = d_model
@@ -539,13 +533,13 @@ def main():
             filepath=os.path.join(checkpoint_path, "best_model"),
             monitor='val_loss',
             save_best_only=True,
-            period=2,# 每2次保存检查点一次
+            period=PERIOD,# 检查检查点一次
             save_weights_only=False,
             verbose=1
         ),
         EarlyStopping(
             monitor='val_loss',
-            patience=5,
+            patience=PATIENCE,
             restore_best_weights=True,
             verbose=1
         ),
