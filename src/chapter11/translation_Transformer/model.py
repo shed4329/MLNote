@@ -21,21 +21,21 @@ np.random.seed(42)
 DATA_DIR = './data'         # 数据集目录
 TRAIN_FILE = 'train.csv'    # 训练集文件名
 TEST_FILE = 'test.csv'      # 测试集文件名
-MAX_VOCAB_SIZE = 32000      # 词汇表大小
-MAX_SEQ_LEN = 30            # 序列最大长度
-BATCH_SIZE=128               # 批次大小
-EPOCHS = 300                 # 训练轮数
+MAX_VOCAB_SIZE = 80000      # 词汇表大小
+MAX_SEQ_LEN = 20            # 序列最大长度
+BATCH_SIZE=192               # 批次大小
+EPOCHS = 150                 # 训练轮数
 REPORT_DIR = './report'     # 训练相关资料
 MODEL_DIR = './models'      # 模型保存目录
 PERIOD = 10                  # 检查点每几次检查一下
 WARMUP_STEPS = 10000        # 预热步数
-PATIENCE = 5               # 早停耐心
+PATIENCE = 3               # 早停耐心
 
 # Transformer参数配置
-NUM_LAYERS = 6              # encoder和decoder层数
-D_MODEL = 256               # 模型维度
-NUM_HEADS = 8               # 多头注意力的头数
-UNIT = 1024                  # 前馈神经网络的隐藏层单元数
+NUM_LAYERS = 2              # encoder和decoder层数
+D_MODEL = 16               # 模型维度
+NUM_HEADS = 2               # 多头注意力的头数
+UNIT = 64                  # 前馈神经网络的隐藏层单元数
 DROPOUT_RATE = 0.15          # Dropout比率
 
 # 加载数据

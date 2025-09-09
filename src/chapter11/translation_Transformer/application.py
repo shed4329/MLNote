@@ -95,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description='英文到中文交互式翻译工具')
     parser.add_argument('--model-dir', type=str, default='./models',
                         help='模型和分词器所在目录 (默认: ./models)')
-    parser.add_argument('--max-seq-len', type=int, default=30,
+    parser.add_argument('--max-seq-len', type=int, default=20,
                         help='序列最大长度 (默认: 50)')
 
     args = parser.parse_args()

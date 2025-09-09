@@ -11,7 +11,7 @@ np.random.seed(42)
 INPUT_CSV = './dataset/wmt_corpus.csv'  # 输入的CSV文件路径
 OUTPUT_DIR = './data'  # 输出的目录路径
 TRAIN_SIZE = 50000   # 训练集大小
-TEST_SIZE = 12000  # 测试集大小
+TEST_SIZE = 10000  # 测试集大小
 CHUNK_SIZE = 100000  # 分块处理大小，每次读取10万行
 
 
