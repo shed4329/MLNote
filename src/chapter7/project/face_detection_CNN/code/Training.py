@@ -11,8 +11,8 @@ import time
 IMAGE_SIZE = (64, 64)
 BATCH_SIZE = 64
 EPOCHS = 4
-FACE_DIR = "../processed/train/face"
-NON_FACE_DIR = "../processed/train/not_face"
+FACE_DIR = "../processed/train/faces"
+NON_FACE_DIR = "../processed/train/non_faces"
 MAX_SAMPLES = 200000  # 每种类型的最大样本数
 MODEL_PATH = "face_classifier_10k"
 REPORT_FILE="report.txt"

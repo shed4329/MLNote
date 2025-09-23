@@ -21,8 +21,8 @@ x_test = x_test / 255.0
 # 定义模型
 model = Sequential([
     Flatten(input_shape=(28, 28)),
-    Dense(128, activation='relu', kernel_regularizer=l2(0.0001)),  # 使用小写l2
-    Dense(64, activation='relu', kernel_regularizer=l2(0.0001)),   # 使用小写l2
+    Dense(25, activation='relu', kernel_regularizer=l2(0.0001)),  # 使用小写l2
+    Dense(15, activation='relu', kernel_regularizer=l2(0.0001)),   # 使用小写l2
     Dense(10)
 ])
 

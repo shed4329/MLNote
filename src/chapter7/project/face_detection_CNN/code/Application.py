@@ -28,6 +28,7 @@ def predict_faces():
     print(f"加载模型: {MODEL_PATH}...")
     try:
         model = tf.keras.models.load_model(MODEL_PATH)
+        model.summary()
         print("模型加载成功")
     except Exception as e:
         print(f"加载模型失败: {e}")

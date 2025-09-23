@@ -2,7 +2,7 @@
 
 import tensorflow as tf
 import numpy as np
-from keras.src.layers import Flatten, Dense
+from keras.layers import Flatten, Dense
 
 # 加载mnist
 mnist = tf.keras.datasets.mnist
