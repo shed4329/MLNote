@@ -7,7 +7,7 @@ from tensorflow.keras.preprocessing import image
 
 # 配置参数
 MODEL_PATH = 'face_classifier_10k'
-IMAGE_PATH = 'sample.jpg'
+IMAGE_PATH = 'sample.png'
 IMAGE_SIZE = (64, 64)
 SAVE_DIR = 'result'
 LAST_CONV_LAYER_NAME = 'conv2d_2'

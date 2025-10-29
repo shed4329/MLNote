@@ -11,17 +11,73 @@ import time
 IMAGE_SIZE = (64, 64)
 BATCH_SIZE = 64
 EPOCHS = 10
-FACE_DIR = "../processed/train/faces"
-NON_FACE_DIR = "../processed/train/non_faces"
+FACE_DIR = "../../../chapter7/project/face_detection_CNN/processed/train/faces" # 复用数据集，难得拷贝到这个项目了，也可以自己修改路径
+NON_FACE_DIR = "../../../chapter7/project/face_detection_CNN/processed/train/non_faces"
 MAX_SAMPLES = 200000  # 每种类型的最大样本数
 MODEL_PATH = "face_classifier_10k"
 REPORT_FILE="report.txt"
-SEED = 42  # 设置随机种子以确保结果可重复
+RATIO = 8   # 通道注意力模块的压缩比例
+SEED = 42   # 设置随机种子以确保结果可重复
 MODEL_SUMMARY_FILE = "model_summary.txt"  # 模型摘要文件路径
 
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
 
+def channel_attention_module(input_feature,ratio=8):
+    """
+    通道注意力模块,论文里的计算方法:
+    Mc(F) = sigmoid(MLP(avg_pool(F)) + MLP(max_pool(F)))
+    """
+    channel = input_feature.shape[-1]   # size:h*w*c
+
+    # 全局平均池化和最大池化
+    avg_pool = layers.GlobalAveragePooling2D()(input_feature)
+    max_pool = layers.GlobalMaxPooling2D()(input_feature)   # CBAM相对于SE-Net的改进:将平均和最大池化混合
+
+    # 共享MLP
+    def mlp(x):
+        x = layers.Dense(channel//ratio,activation='relu',use_bias=False)(x)    # squeeze
+        x = layers.Dense(channel,activation='sigmoid',use_bias=False)(x)    # TODO:这里使用sigmoid激活？        # excitation
+        return x
+
+    avg_out = mlp(avg_pool) # TODO:维度: 1维数组？
+    max_out = mlp(max_pool)
+
+    # 维度扩展以匹配输入特征形状
+    avg_out = layers.Reshape((1, 1, channel))(avg_out)
+    max_out = layers.Reshape((1, 1, channel))(max_out)
+
+    # 相加后使用sigmoid激活
+    attention = layers.Add()([avg_out, max_out])
+    attention = layers.Activation('sigmoid')(attention)
+
+    # 和输入特征相乘
+    return layers.Multiply()([input_feature, attention])
+
+def spatial_attention_module(input_feature):
+    """
+    空间注意力模块,论文中的计算公式：
+    Ms(F) = sigmoid(f7*7([AvgPool(F);MaxPool(F)]))
+    其中，f7*7是一个7*7的卷积核，用于生成空间注意力图。
+    """
+    # 在通道维度上进行平均池化和最大池化
+    avg_pool = layers.Lambda(lambda x: tf.reduce_mean(x, axis=-1, keepdims=True))(input_feature)    # h*w*c -> h*w*1 对一个像素不同通道的值去平均
+    max_pool = layers.Lambda(lambda x: tf.reduce_max(x, axis=-1, keepdims=True))(input_feature)
+
+    # 拼接结果
+    concat = layers.Concatenate(axis=-1)([avg_pool, max_pool]) # h*w*1 -> h*w*2
+
+    # 通过卷积层生成空间注意力图
+    attention = layers.Conv2D(1, (7,7), padding='same', activation='sigmoid',use_bias=False)(concat)    # h*w*2 -> h*w*1
+
+    # 和输入特征相乘
+    return layers.Multiply()([input_feature, attention])    # 广播，将attention->h*w*c,然后相乘
+
+def cbam_moudle(input_feature,ratio=RATIO):
+    """CBAM模块，先通道注意力后空间注意力"""
+    x = channel_attention_module(input_feature,ratio)
+    x = spatial_attention_module(x)
+    return x
 
 def load_and_preprocess_image(file_path, label):
     """加载并预处理单张图片"""
@@ -121,7 +177,7 @@ def print_training_report(history, train_samples, val_samples):
     report_lines = []
 
     report_lines.append("\n" + "=" * 50)
-    report_lines.append("                 训练报告")
+    report_lines.append("                 CBAM-CNN训练报告")
     report_lines.append("=" * 50)
 
     report_lines.append("\n[数据集信息]")
@@ -207,22 +263,30 @@ def main():
             augment=False  # 验证集不使用数据增强
         )
 
-        # 构建模型
-        model = models.Sequential([
-            # 卷积层1
-            layers.Conv2D(32, (3, 3), activation='relu', input_shape=(*IMAGE_SIZE, 3)),
-            layers.MaxPooling2D((2, 2)),
-            # 卷积层2
-            layers.Conv2D(64, (3, 3), activation='relu'),
-            layers.MaxPooling2D((2, 2)),
-            # 卷积层3
-            layers.Conv2D(64, (3, 3), activation='relu'),
-            layers.MaxPooling2D((2, 2)),
-            # 全连接层
-            layers.Flatten(),
-            layers.Dense(64, activation='relu'),
-            layers.Dense(1, activation='sigmoid')
-        ])
+        # 构建CBAM-CNN，把Sequential API改为Functional API
+        inputs = layers.Input(shape=(*IMAGE_SIZE,3))
+
+        # 第一个CBAM卷积块
+        x = layers.Conv2D(32, (3, 3), activation='relu')(inputs)
+        x = layers.MaxPooling2D((2, 2))(x)
+        x = cbam_moudle(x)
+
+        # 第二个CBAM卷积块
+        x = layers.Conv2D(64, (3, 3), activation='relu')(x)
+        x = layers.MaxPooling2D((2, 2))(x)
+        x = cbam_moudle(x)
+
+        # 第三个CBAM卷积块
+        x = layers.Conv2D(64, (3, 3), activation='relu')(x)
+        x = layers.MaxPooling2D((2, 2))(x)
+        x = cbam_moudle(x)
+
+        # 全连接层
+        x = layers.Flatten()(x)
+        x = layers.Dense(64, activation='relu')(x)
+        outputs = layers.Dense(1, activation='sigmoid')(x)
+
+        model = models.Model(inputs=inputs, outputs=outputs)
 
         # 编译模型
         model.compile(
@@ -230,6 +294,7 @@ def main():
             loss='binary_crossentropy',
             metrics=['accuracy']
         )
+
         # 打印模型摘要
         model.summary()
         save_model_summary(model)
