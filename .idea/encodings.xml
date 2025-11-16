@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/src/chapter11/GAN_MNIST_generation/report.txt" charset="GBK" />
     <file url="file://$PROJECT_DIR$/src/chapter5/project/digit_distinguishing/train/report.txt" charset="GBK" />
     <file url="file://$PROJECT_DIR$/src/chapter9/project/myAnimeList_Recommender_contentBasedFiltering/model/report.txt" charset="GBK" />
   </component>
